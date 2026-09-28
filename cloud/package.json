@@ -1,0 +1,12 @@
+{
+  "name": "arienx-cloud-core",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "tsc --noEmit" },
+  "dependencies": {
+    "@netlify/blobs": "^11.1.1",
+    "@netlify/functions": "^6.0.0",
+    "@netlify/identity": "^2.0.0"
+  },
+  "devDependencies": { "@types/node": "^22.0.0", "typescript": "^5.6.0" }
+}

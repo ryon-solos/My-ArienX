@@ -1,0 +1,68 @@
+# ── ArienX — local state that never belongs in the repository ─────────────────
+# Everything listed here is created by the app on first run. A fresh clone with
+# none of it present boots straight to the setup screen, which is the intended
+# first experience — so nothing here needs to be committed, and some of it must
+# never be.
+
+# ── Secrets. Committing any of these publishes them. ──────────────────────────
+# Gemini API keys and per-plugin credentials
+config/api_keys.json
+# Dashboard TLS material
+config/certs/
+# Linked WhatsApp session data
+config/whatsapp_web/
+# Google OAuth tokens and client secrets
+**/token*.json
+**/client_secret*.json
+*credentials*.json
+.env
+.env.*
+**/.env
+**/.env.*
+
+# ── Personal data the assistant accumulates about you ─────────────────────────
+memory/long_term.json
+memory/chats.json
+memory/personality_profiles.json
+memory/cloud_safe.json
+memory/*.db
+
+# Private certificates, bridge credentials, and exported secret material
+*.pem
+*.key
+*.p12
+*.pfx
+
+# ── Python build noise ────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Editors and operating systems ─────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Runtime output ────────────────────────────────────────────────────────────
+*.log
+logs/
+downloads/
+screenshots/
+
+# ── Local backups. Never commit these (may sit next to live config). ──────
+*.bak
+*.tmp

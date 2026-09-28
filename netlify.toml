@@ -1,0 +1,8 @@
+[build]
+  base = "cloud"
+  command = "npm run build"
+  publish = "public"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
