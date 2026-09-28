@@ -2236,17 +2236,28 @@ class JarvisLive:
         """
         capabilities = ["computer", "files", "screen", "camera"]
         registered = False
+        last_notice = ""
+        def notice(message: str) -> None:
+            nonlocal last_notice
+            if message and message != last_notice:
+                self.ui.write_log(f"NET: {message}")
+                last_notice = message
         while self._cloud_bridge.configured:
             try:
                 if not registered:
                     registered = await asyncio.to_thread(self._cloud_bridge.register, "ArienX desktop")
                     if not registered:
-                        self.ui.write_log("NET: Cloud device registration needs a valid Cloud Core sign-in token.")
+                        notice(self._cloud_bridge.last_error or "Cloud device pairing needs attention in Settings.")
                 if registered:
-                    await asyncio.to_thread(self._cloud_bridge.heartbeat, capabilities)
+                    if not await asyncio.to_thread(self._cloud_bridge.heartbeat, capabilities):
+                        registered = False
+                        notice(self._cloud_bridge.last_error or "Cloud Core heartbeat was rejected.")
+                        await asyncio.sleep(30)
+                        continue
+                    last_notice = ""
                     sync_state = await asyncio.to_thread(self._cloud_bridge.sync_cloud_safe)
                     if sync_state == "conflict":
-                        self.ui.write_log("NET: Cloud-safe memory changed elsewhere — sync paused to prevent overwrite.")
+                        notice("Cloud-safe memory changed elsewhere — sync paused to prevent overwrite.")
                     tasks = await asyncio.to_thread(self._cloud_bridge.poll_tasks)
                     for task in tasks:
                         try:
@@ -2258,6 +2269,7 @@ class JarvisLive:
                         await asyncio.to_thread(self._cloud_bridge.complete_task, str(task.get("id", "")), result)
             except Exception as exc:
                 print(f"[CloudBridge] {exc}")
+                notice("Cloud Core connection paused. It will retry automatically.")
             await asyncio.sleep(30)
 
     # ── Morning briefing ────────────────────────────────────────────────────────

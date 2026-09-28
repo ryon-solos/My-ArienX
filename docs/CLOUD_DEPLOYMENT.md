@@ -11,14 +11,18 @@ selected cloud-safe memory. It never hosts the desktop Python process.
 3. Set `GEMINI_API_KEY` in Netlify environment variables for `/api/chat`.
    Optionally set `OPENROUTER_API_KEY` and `OPENROUTER_MODEL`. These keys stay
    in Netlify; desktop API keys are never synchronized.
-4. From the desktop, provision `cloud_bridge` with the deployment URL and a
-   Netlify Identity access token. Registration uploads only the device's public
-   Ed25519 key; its private key remains in local `api_keys.json`.
+4. Invite the user through Netlify Identity, then accept that invite at the
+   deployed Cloud Core page. From ArienX Settings → Cloud Core, enter the
+   deployment URL, invited email, and password, then choose Pair Device.
+   ArienX obtains and refreshes the Identity session itself; it never asks the
+   user to copy a token. Registration uploads only the device's public Ed25519
+   key. Its private key and local session stay in ignored `api_keys.json`.
 
 ## Online/offline contract
 
-- A desktop posts an authenticated heartbeat every 30 seconds. Cloud reports it
-  offline after 90 seconds without a heartbeat.
+- A desktop posts a signed heartbeat every 30 seconds. Cloud reports it offline
+  after 90 seconds without a heartbeat. Claimed tasks are re-queued after 60
+  seconds if the desktop disconnects before reporting a result.
 - Cloud chat and cloud-safe memory remain usable while no device is online.
 - Computer, files, screen, and camera are queued only for an online paired
   device. The desktop executes them through the existing action dispatcher, so
@@ -37,7 +41,8 @@ selected cloud-safe memory. It never hosts the desktop Python process.
 - `POST /api/research` — authenticated Gemini grounded research; it stays
   separate from OpenRouter because source-grounding is provider-specific.
 - `GET|PUT /api/memory` — authenticated cloud-safe memory with revisions.
-- `POST /api/bridge/register` — user-authenticated public-key pairing.
+- `POST|DELETE /api/bridge/register` — user-authenticated public-key pairing,
+  re-pairing, and remote disconnect.
 - `POST /api/bridge/heartbeat` — device-signed presence update.
 - `GET /api/bridge/status` — user-authenticated online/capability state.
 - `POST|GET|PUT /api/bridge/tasks` — authenticated command queue, claim, and completion.

@@ -4374,20 +4374,41 @@ class MainWindow(QMainWindow):
         dialog = QDialog(self); dialog.setWindowTitle("ArienX Cloud Core")
         dialog.setStyleSheet(f"QDialog {{ background: {C.DARK}; color: {C.TEXT}; }} QLineEdit {{ background: {C.PANEL2}; color: {C.TEXT}; border: 1px solid {C.BORDER}; padding: 4px; }}")
         form = QFormLayout(dialog)
-        note = QLabel("Optional Netlify Cloud Core pairing. Your desktop keeps its private device key and local API keys; Cloud Core receives only a public key and signed heartbeats.")
+        note = QLabel("Sign in with your invite-only Netlify Identity account to pair this desktop. ArienX creates and keeps its private device key locally; Cloud Core receives only its public key and signed heartbeats.")
         note.setWordWrap(True); form.addRow(note)
         endpoint = QLineEdit(cfg.url); endpoint.setPlaceholderText("https://your-site.netlify.app")
-        token = QLineEdit(cfg.access_token); token.setEchoMode(QLineEdit.EchoMode.Password); token.setPlaceholderText("Netlify Identity access token")
-        form.addRow("Cloud URL", endpoint); form.addRow("Identity token", token)
-        save = QPushButton("PAIR DEVICE — RESTART REQUIRED")
+        email = QLineEdit(cfg.user_email); email.setPlaceholderText("Netlify Identity email")
+        password = QLineEdit(); password.setEchoMode(QLineEdit.EchoMode.Password); password.setPlaceholderText("Netlify Identity password")
+        label = QLineEdit(cfg.device_label); label.setPlaceholderText("This device name")
+        form.addRow("Cloud URL", endpoint); form.addRow("Identity email", email); form.addRow("Identity password", password); form.addRow("Device name", label)
+        save = QPushButton("PAIR / RE-PAIR DEVICE")
         def pair():
-            if not endpoint.text().strip().startswith("https://") or not token.text().strip():
-                QMessageBox.warning(dialog, "Cloud Core", "Enter an HTTPS Cloud URL and Netlify Identity access token.")
-                return
-            provision(endpoint.text(), token.text())
-            self._log.append_log("SYS: Cloud Core paired locally — restart ArienX to connect the device bridge.")
-            dialog.accept()
+            try:
+                paired = provision(endpoint.text(), email.text(), password.text(), label.text())
+            except Exception as exc:
+                QMessageBox.warning(dialog, "Cloud Core", str(exc)); return
+            self._log.append_log("NET: Cloud Core paired — restart ArienX to start signed heartbeats.")
+            QMessageBox.information(dialog, "Cloud Core", "Device paired. Restart ArienX; Cloud Core will show it online within 30 seconds.")
         save.clicked.connect(pair); form.addRow(save)
+        check = QPushButton("CHECK CLOUD CONNECTION")
+        def check_connection():
+            from core.cloud_bridge import CloudBridge
+            status = CloudBridge().status()
+            QMessageBox.information(dialog, "Cloud Core", "Connected — device is online." if status and status.get("online") else "Paired, but waiting for the next ArienX heartbeat." if status else "Cloud Core connection is unavailable. Re-pair if the problem continues.")
+        check.clicked.connect(check_connection); form.addRow(check)
+        disconnect = QPushButton("DISCONNECT THIS DEVICE")
+        def disconnect_device():
+            from core.cloud_bridge import CloudBridge
+            if QMessageBox.question(dialog, "Disconnect Cloud Core", "Disconnect this device and erase its local Cloud Core session and private key?") != QMessageBox.StandardButton.Yes:
+                return
+            bridge = CloudBridge()
+            if bridge.disconnect():
+                self._log.append_log("NET: Cloud Core device disconnected and local pairing secrets erased.")
+                QMessageBox.information(dialog, "Cloud Core", "This device has been disconnected. Restart ArienX to stop the current bridge loop.")
+                dialog.accept()
+            else:
+                QMessageBox.warning(dialog, "Cloud Core", bridge.last_error or "Could not disconnect this device.")
+        disconnect.clicked.connect(disconnect_device); form.addRow(disconnect)
         dialog.exec()
 
     @staticmethod

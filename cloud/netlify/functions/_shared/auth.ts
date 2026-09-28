@@ -2,7 +2,7 @@ import { getUser } from "@netlify/identity"
 import { getStore } from "@netlify/blobs"
 import { createHash, createPublicKey, verify } from "node:crypto"
 
-export type Device = { id: string; owner: string; publicKey: string; label: string; capabilities: string[]; lastSeen?: string }
+export type Device = { id: string; owner: string; publicKey: string; label: string; capabilities: string[]; lastSeen?: string; active: boolean }
 const devices = () => getStore({ name: "arienx-devices", consistency: "strong" })
 
 export async function requireUser() {
@@ -21,7 +21,7 @@ export async function requireDevice(req: Request, body: string): Promise<Device>
   const signature = req.headers.get("x-arienx-signature") || ""
   if (!id || !stamp || !signature || Math.abs(Date.now() / 1000 - Number(stamp)) > 120) throw new Error("unauthorized")
   const device = await readDevice(id)
-  if (!device) throw new Error("unauthorized")
+  if (!device || !device.active) throw new Error("unauthorized")
   const digest = createHash("sha256").update(body).digest("hex")
   const signed = `${stamp}\n${req.method}\n${new URL(req.url).pathname}\n${digest}`
   if (!verify(null, Buffer.from(signed), createPublicKey(device.publicKey), Buffer.from(signature, "base64"))) throw new Error("unauthorized")
