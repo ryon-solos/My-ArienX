@@ -23,6 +23,12 @@ export default async (req: Request) => {
       const task: Task = { id: randomUUID(), action: body.action, args, status: "queued", attempts: 0, expiresAt: new Date(now() + 10 * 60_000).toISOString() }
       tasks.push(task); await store().setJSON(key(device.id), tasks.filter(taskAlive).slice(-50)); return json({ task_id: task.id, status: task.status })
     }
+    if (req.method === "GET" && !req.headers.get("x-arienx-device")) {
+      const user = await requireUser(); const id = new URL(req.url).searchParams.get("device_id") || ""; const device = await readDevice(id)
+      if (!device || device.owner !== user.id) return bad("not found", 404)
+      const tasks = ((await store().get(key(device.id), { type: "json" }) as Task[] | null) || []).filter(taskAlive)
+      return json({ tasks: tasks.slice(-20).map(task => ({ id: task.id, action: task.action, status: task.status, result: task.result || null })) })
+    }
     const device = await requireDevice(req, raw); const tasks = ((await store().get(key(device.id), { type: "json" }) as Task[] | null) || []).filter(taskAlive)
     if (req.method === "GET") {
       tasks.filter(requeue).forEach(task => { task.status = "queued"; delete task.claimedAt })
