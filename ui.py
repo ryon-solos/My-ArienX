@@ -5639,6 +5639,11 @@ class _RootShim:
         pass
 
 
+class _SourceUpdateEvents(QObject):
+    available = pyqtSignal(object)
+    finished = pyqtSignal(str)
+
+
 class JarvisUI:
     def __init__(self, face_path: str, size=None):
         self._app = QApplication.instance() or QApplication(sys.argv)
@@ -5646,6 +5651,53 @@ class JarvisUI:
         self._win = MainWindow(face_path)
         self.root = _RootShim(self._app)
         self._win.show()
+        if not getattr(sys, "frozen", False) and (Path(__file__).parent / ".git").exists():
+            self._source_update_busy = False
+            self._source_updates = _SourceUpdateEvents()
+            self._source_updates.available.connect(self._offer_source_update)
+            self._source_updates.finished.connect(self._source_update_finished)
+            self._source_update_timer = QTimer(self._win)
+            self._source_update_timer.timeout.connect(self._check_source_update)
+            self._source_update_timer.start(6 * 60 * 60 * 1000)
+            QTimer.singleShot(10000, self._check_source_update)
+
+    def _check_source_update(self):
+        if self._source_update_busy:
+            return
+        self._source_update_busy = True
+        def worker():
+            try:
+                from core.updater import check
+                update = check()
+                if update:
+                    self._source_updates.available.emit(update)
+            except Exception:
+                pass  # Offline or edited development checkouts keep working.
+            finally:
+                self._source_update_busy = False
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _offer_source_update(self, update):
+        if update["needs_setup"]:
+            QMessageBox.information(self._win, "ArienX Update", "New source is available, but dependencies changed. Update through launcher/setup.\n\n" + update["release_notes"])
+            return
+        if QMessageBox.question(self._win, "ArienX Update", "New GitHub source is available. Apply it now and restart ArienX afterward?\n\n" + update["release_notes"]) != QMessageBox.StandardButton.Yes:
+            return
+        self._source_update_busy = True
+        self._win._log.append_log("SYS: Applying GitHub source update…")
+        def worker():
+            try:
+                from core.updater import apply
+                apply(update)
+                self._source_updates.finished.emit("Source updated. Restart ArienX to use it.")
+            except Exception as exc:
+                self._source_updates.finished.emit(str(exc))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _source_update_finished(self, message):
+        self._source_update_busy = False
+        QMessageBox.information(self._win, "ArienX Update", message)
+
 
     @property
     def muted(self) -> bool:
