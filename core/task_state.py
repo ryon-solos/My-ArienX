@@ -39,7 +39,6 @@ CHAIN_TOOLS = frozenset({
     "file_controller",
     "file_processor",
     "send_message",
-    "dev_agent",
     "code_helper",
     "youtube_video",
     "reminder",

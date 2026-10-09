@@ -9,7 +9,10 @@
 - `core/capability_router.py` - semantic-to-concrete capability routing.
 - `core/model_provider.py` - model-provider abstraction; keep injection-ready.
 - `core/model_router.py` - logical model roles and bounded provider fallback.
-- `core/external_router.py` - opt-in specialist-provider eligibility; Gemini Live remains primary.
+- `core/external_router.py` - optional-provider status and key validation only.
+- `core/altrex_ide.py` - starts the bundled ALTREX CODE Electron workspace from the single ArienX settings action.
+- `core/multi_agent.py` - Gemini-led worker orchestration, provider adapters, budgets, cancellation, retries, and monitor snapshots.
+- `extensions/` - isolated Apps runtime, SDK boundary, generated-extension staging, validation, lifecycle, and Bubblewrap host.
 - `core/vision_state.py` - screen/camera availability, activity, and freshness.
 - `memory/chat_store.py` - local multi-chat history with bounded lexical context retrieval.
 - `memory/config_manager.py` - bounded response, research, vision, and optional-provider preferences.

@@ -1,9 +1,4 @@
-"""Policy-only routing for optional specialist models.
-
-It never replaces Gemini Live and never performs network I/O.  The live agent
-remains the one that decides whether a task is sufficiently specialist to use
-an enabled provider; this object supplies a safe, deterministic candidate.
-"""
+"""Secret-free status and on-demand validation for optional providers."""
 
 from __future__ import annotations
 
@@ -11,25 +6,6 @@ import json
 from urllib import request
 
 from memory.config_manager import get_external_providers
-
-
-SPECIALIST_ROLES = frozenset({"RESEARCH", "REASONING", "CODING"})
-
-
-def candidate_for(role: str) -> dict | None:
-    if (role or "").upper() not in SPECIALIST_ROLES:
-        return None
-    providers = get_external_providers()
-    # OpenRouter has a documented auto-router; OmniRouter remains opt-in and
-    # additionally needs an explicit endpoint before it can ever be selected.
-    for name in ("openrouter", "omnirouter"):
-        item = providers[name]
-        if not item.get("enabled") or not item.get("api_key"):
-            continue
-        if name == "omnirouter" and not item.get("base_url"):
-            continue
-        return {"provider": name, "model": item.get("model") or "auto"}
-    return None
 
 
 def provider_status() -> list[dict]:

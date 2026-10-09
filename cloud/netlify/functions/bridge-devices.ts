@@ -6,9 +6,9 @@ import { type Device, requireUser } from "./_shared/auth.js"
 export default async (req: Request) => {
   if (req.method !== "GET") return bad("method not allowed", 405)
   try {
-    const user = await requireUser(); const store = getStore({ name: "arienx-devices", consistency: "strong" })
+    const user = await requireUser(req); const store = getStore({ name: "arienx-devices", consistency: "strong" })
     const { blobs } = await store.list({ prefix: "device/" })
-    const devices = await Promise.all(blobs.slice(0, 50).map(async ({ key }) => await store.get(key, { type: "json" }) as Device | null))
+    const devices = await Promise.all(blobs.map(async ({ key }) => await store.get(key, { type: "json" }) as Device | null))
     return json({ devices: devices.filter((device): device is Device => !!device && device.owner === user.id).map(device => ({
       device_id: device.id, label: device.label, paired: device.active,
       online: device.active && !!device.lastSeen && Date.now() - Date.parse(device.lastSeen) < 90_000,

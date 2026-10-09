@@ -21,3 +21,12 @@ and handle dependency setup. No launcher is implemented in this phase.
 A private GitHub repository requires each user's access. To serve public users,
 publish the source in a public repository. Pushing to GitHub does not publish or
 replace the existing Android APK; its release workflow is unchanged.
+
+## Privacy cleanup bootstrap
+
+Git history was rewritten to remove private desktop screenshots, local machine
+paths and personal commit email addresses. Older clones must be cloned again.
+Back up any local source changes and keep account data private before switching.
+Use `git clone https://github.com/ryon-solos/My-ArienX.git` for a new checkout.
+The repository contains desktop, ALTREX, mobile and Cloud Core source.
+Setup and dependency installation are still required; this is not an installer.

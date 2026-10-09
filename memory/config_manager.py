@@ -218,6 +218,11 @@ def save_turn_tuning(values: dict) -> None:
     CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
 
 
+def get_proactive_chat_enabled() -> bool:
+    """Occasional unsolicited conversation; separate from Live noise rejection."""
+    return bool(load_api_keys().get("proactive_chat", True))
+
+
 def get_proactive_audio_enabled() -> bool:
     """Whether the model gets to decide an utterance was not aimed at it and
     stay quiet.
@@ -453,13 +458,20 @@ def save_external_provider(name: str, values: dict) -> None:
     _patch_config(external_providers={**current, name: clean})
 
 
-def get_developer_mode() -> bool:
-    """Technical runtime disclosure is opt-in; it never reveals secrets."""
-    return bool(load_api_keys().get("developer_mode", False))
+WORKER_ROLES = ("reasoning", "coding", "research", "vision", "summarization", "planning")
 
 
-def save_developer_mode(enabled: bool) -> None:
-    _patch_config(developer_mode=bool(enabled))
+def get_worker_models() -> dict:
+    """Role routing only; provider adapters remain independent of this config."""
+    raw = load_api_keys().get("worker_models")
+    raw = raw if isinstance(raw, dict) else {}
+    return {role: raw.get(role, "") for role in WORKER_ROLES}
+
+
+def save_worker_models(models: dict) -> None:
+    clean = {role: str((models or {}).get(role) or "").strip()[:160]
+             for role in WORKER_ROLES}
+    _patch_config(worker_models=clean)
 
 
 def get_local_profile() -> dict:

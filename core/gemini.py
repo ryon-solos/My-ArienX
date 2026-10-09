@@ -384,6 +384,11 @@ def call(contents, tier: str = FAST, config=None,
     if ladder is None:
         ladder = (tier,) + tuple(m for m in _LADDERS[SMART] if m != tier)
 
+    if isinstance(config, dict) and config.get("max_output_tokens", 0) >= 8192:
+        # Full documents use existing text models, avoiding short spoken Live
+        # turns. Preserve Live-first routing for ordinary classification/vision.
+        ladder = tuple(model for model in ladder if model != LIVE)
+        timeout_ms = max(timeout_ms, 120_000)
     resolved_key = key or api_key()
     if not resolved_key:
         print("[Gemini] no Gemini API key is configured")
@@ -403,7 +408,10 @@ def call(contents, tier: str = FAST, config=None,
             kwargs = {"model": model, "contents": contents}
             if config is not None:
                 kwargs["config"] = config
-            return cl.models.generate_content(**kwargs)
+            reply = cl.models.generate_content(**kwargs)
+            if any("MAX_TOKENS" in str(getattr(c, "finish_reason", "")) for c in reply.candidates or []):
+                raise RuntimeError("Generation reached its output limit; refusing to save a truncated document")
+            return reply
         except Exception as e:
             msg = str(e)
             if "429" in msg or "RESOURCE_EXHAUSTED" in msg:

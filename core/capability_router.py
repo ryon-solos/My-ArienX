@@ -187,8 +187,33 @@ class CapabilityRouter:
                 if key in entities:
                     args[key] = entities[key]
         
-        elif action == "dev_agent":
-            for key in ("description", "language", "project_name", "timeout"):
+        elif action == "code_helper":
+            for key in ("action", "description", "language", "output_path", "file_path", "code", "args", "timeout"):
+                if key in entities:
+                    args[key] = entities[key]
+        
+        elif action == "reminder":
+            for key in ("date", "time", "message"):
+                if key in entities:
+                    args[key] = entities[key]
+        
+        elif action == "weather_report":
+            args["city"] = entities.get("city", "")
+            if "time" in entities:
+                args["time"] = entities["time"]
+        
+        elif action == "flight_finder":
+            for key in ("origin", "destination", "date", "return_date", "passengers", "cabin", "save"):
+                if key in entities:
+                    args[key] = entities[key]
+        
+        elif action == "game_updater":
+            for key in ("action", "platform", "game_name", "app_id", "hour", "minute", "shutdown_when_done"):
+                if key in entities:
+                    args[key] = entities[key]
+        
+        elif action == "reminder":
+            for key in ("date", "time", "message"):
                 if key in entities:
                     args[key] = entities[key]
         
@@ -222,11 +247,6 @@ class CapabilityRouter:
                 if key in entities:
                     args[key] = entities[key]
         
-        elif action == "dev_agent":
-            for key in ("description", "language", "project_name", "timeout"):
-                if key in entities:
-                    args[key] = entities[key]
-        
         elif action == "code_helper":
             for key in ("action", "description", "language", "output_path", "file_path", "code", "args", "timeout"):
                 if key in entities:
@@ -254,46 +274,6 @@ class CapabilityRouter:
         
         elif action == "reminder":
             for key in ("date", "time", "message"):
-                if key in entities:
-                    args[key] = entities[key]
-        
-        elif action == "dev_agent":
-            for key in ("description", "language", "project_name", "timeout"):
-                if key in entities:
-                    args[key] = entities[key]
-        
-        elif action == "code_helper":
-            for key in ("action", "description", "language", "output_path", "file_path", "code", "args", "timeout"):
-                if key in entities:
-                    args[key] = entities[key]
-        
-        elif action == "reminder":
-            for key in ("date", "time", "message"):
-                if key in entities:
-                    args[key] = entities[key]
-        
-        elif action == "weather_report":
-            args["city"] = entities.get("city", "")
-            if "time" in entities:
-                args["time"] = entities["time"]
-        
-        elif action == "flight_finder":
-            for key in ("origin", "destination", "date", "return_date", "passengers", "cabin", "save"):
-                if key in entities:
-                    args[key] = entities[key]
-        
-        elif action == "game_updater":
-            for key in ("action", "platform", "game_name", "app_id", "hour", "minute", "shutdown_when_done"):
-                if key in entities:
-                    args[key] = entities[key]
-        
-        elif action == "reminder":
-            for key in ("date", "time", "message"):
-                if key in entities:
-                    args[key] = entities[key]
-        
-        elif action == "dev_agent":
-            for key in ("description", "language", "project_name", "timeout"):
                 if key in entities:
                     args[key] = entities[key]
         

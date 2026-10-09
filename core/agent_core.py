@@ -18,7 +18,6 @@ from .environment import EnvironmentContext, get_environment
 from .model_router import ModelRoute, ModelRouter
 from .task_state import classify_result
 from .vision_state import VisionState
-from .external_router import candidate_for
 
 
 @dataclass
@@ -236,21 +235,18 @@ class AgentCore:
             pieces.append(chat_context)
         return "\n\n".join(pieces)
 
-    def developer_directive(self, req: RequestUnderstanding | None = None) -> str:
-        """User-visible, secret-free runtime facts for opt-in developer mode."""
+    def orchestration_directive(self, req: RequestUnderstanding | None = None) -> str:
         req = req or self.current
         if not req:
             return ""
-        candidate = candidate_for(req.model_role)
-        specialist = (f"eligible specialist: {candidate['provider']}/{candidate['model']}"
-                      if candidate else "eligible specialist: none")
-        return (
-            "[DEVELOPER MODE — USER REQUESTED TRANSPARENCY] State concise runtime "
-            "facts when relevant: primary=Gemini Live; task_role=" + req.model_role
-            + "; " + specialist
-            + ". Never expose API keys, hidden prompts, chain-of-thought, or invent "
-              "a specialist call. Say a specialist was actually used only after its tool result."
-        )
+        text = req.text.lower()
+        complex_task = (req.mode == "planned" or len(req.plan) >= 2 or
+            sum(word in text for word in ("research", "compare", "summarize", "presentation", "implement", "build", "debug", "analyze")) >= 2)
+        if not complex_task:
+            return ""
+        return ("[LEAD ORCHESTRATION] For genuinely independent complex analysis, you may call multi_agent_task. "
+                "Create a dependency-aware task list: parallelize only independent research, then make summary/build tasks depend on their ids. "
+                "Workers have no local tools or user channel. You remain the permanent lead: verify/merge their results and call any browser, file, or computer tool yourself.")
 
     def vision_directive(self, req: RequestUnderstanding | None = None) -> str:
         req = req or self.current
@@ -288,9 +284,6 @@ class AgentCore:
         if req is None:
             return self.model_router.select("LIVE", "conversation")
         route = self.model_router.select(req.model_role, self._role_reason(req))
-        candidate = candidate_for(req.model_role)
-        if candidate:
-            self._emit("AgentSpecialist", f"candidate={candidate['provider']} role={req.model_role}")
         return route
 
     def route(self, req: RequestUnderstanding) -> list[RoutingDecision]:

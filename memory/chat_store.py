@@ -27,7 +27,7 @@ def _now() -> str:
 
 
 def _empty() -> dict:
-    return {"active_id": "", "chats": []}
+    return {"active_id": "", "chats": [], "deleted_ids": [], "pending_cloud_deletes": []}
 
 
 def _load_unlocked() -> dict:
@@ -37,7 +37,9 @@ def _load_unlocked() -> dict:
         return _empty()
     if not isinstance(data, dict) or not isinstance(data.get("chats"), list):
         return _empty()
-    return {"active_id": str(data.get("active_id") or ""), "chats": data["chats"]}
+    return {"active_id": str(data.get("active_id") or ""), "chats": data["chats"],
+            "deleted_ids": data.get("deleted_ids", []),
+            "pending_cloud_deletes": data.get("pending_cloud_deletes", [])}
 
 
 def _save_unlocked(data: dict) -> None:
@@ -112,20 +114,32 @@ class ChatStore:
             _save_unlocked(data)
             return _summary(chat)
 
-    def delete(self, chat_id: str) -> bool:
+    def delete(self, chat_id: str, cloud: bool = False) -> bool:
         with _lock:
             data = _load_unlocked()
             before = len(data["chats"])
             data["chats"] = [c for c in data["chats"] if c.get("id") != chat_id]
-            if len(data["chats"]) == before:
-                return False
+            if chat_id not in data["deleted_ids"]:
+                data["deleted_ids"].append(chat_id)
+            if cloud and chat_id not in data["pending_cloud_deletes"]:
+                data["pending_cloud_deletes"].append(chat_id)
             if data["active_id"] == chat_id:
                 data["active_id"] = data["chats"][-1].get("id", "") if data["chats"] else ""
             _save_unlocked(data)
-            return True
+            return len(data["chats"]) != before
+
+    def pending_cloud_deletes(self) -> list[str]:
+        with _lock:
+            return list(_load_unlocked()["pending_cloud_deletes"])
+
+    def cloud_delete_done(self, chat_id: str) -> None:
+        with _lock:
+            data = _load_unlocked()
+            data["pending_cloud_deletes"] = [i for i in data["pending_cloud_deletes"] if i != chat_id]
+            _save_unlocked(data)
 
     def append(self, chat_id: str, role: str, text: str) -> None:
-        text = " ".join((text or "").split())
+        text = (text or "").strip()
         if role not in ("user", "assistant") or not text:
             return
         with _lock:
@@ -134,7 +148,7 @@ class ChatStore:
             if not chat:
                 return
             messages = chat.setdefault("messages", [])
-            messages.append({"role": role, "text": text[:4000], "at": _now()})
+            messages.append({"role": role, "text": text[:60000], "at": _now()})
             del messages[:-MAX_MESSAGES]
             if chat.get("title") == "New conversation" and role == "user":
                 chat["title"] = text[:56].rstrip(" .!?…") or "New conversation"
@@ -146,6 +160,37 @@ class ChatStore:
             data = _load_unlocked()
             chat = next((c for c in data["chats"] if c.get("id") == chat_id), None)
             return list(chat.get("messages", [])) if chat else []
+
+    def conversation(self, chat_id: str) -> dict | None:
+        with _lock:
+            data = _load_unlocked()
+            chat = next((c for c in data["chats"] if c.get("id") == chat_id), None)
+            return dict(chat) if chat else None
+
+    def accept_cloud(self, cloud: dict) -> dict | None:
+        """Persist an account-scoped cloud conversation under its existing ID."""
+        chat_id = str(cloud.get("id") or "")
+        if not chat_id:
+            return None
+        messages = [
+            {"role": str(m.get("role")), "text": str(m.get("text")), "at": str(m.get("at") or _now())}
+            for m in cloud.get("messages", []) if isinstance(m, dict)
+            and m.get("role") in ("user", "assistant") and str(m.get("text") or "").strip()
+        ][-MAX_MESSAGES:]
+        incoming = {"id": chat_id, "title": str(cloud.get("title") or "New conversation")[:72],
+                    "created_at": str(cloud.get("created") or _now()), "updated_at": str(cloud.get("updated") or _now()),
+                    "messages": messages}
+        with _lock:
+            data = _load_unlocked()
+            if chat_id in data["deleted_ids"]:
+                return None
+            current = next((c for c in data["chats"] if c.get("id") == chat_id), None)
+            if current:
+                current.update(incoming)
+            else:
+                data["chats"].append(incoming)
+            _save_unlocked(data)
+        return _summary(incoming)
 
     def context_for(self, chat_id: str, query: str, limit: int = 5) -> str:
         """Return only recent and query-relevant turns, never a whole chat."""

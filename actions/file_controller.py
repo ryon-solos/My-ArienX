@@ -664,7 +664,19 @@ def file_controller(
             return list_files(path)
 
         elif action == "create_file":
-            return create_file(path, name=name, content=params.get("content", ""))
+            content = params.get("content", "")
+            instruction = str(params.get("instruction") or "").strip()
+            if instruction:
+                from core import gemini
+                content = gemini.text(
+                    "Write the COMPLETE document requested below. Return only document text. "
+                    "Honor explicit detail and word counts; include substantive sections and examples, "
+                    "not a summary or outline. Do not invent current facts or sources. "
+                    "Use the supplied source material when available.\n\n" + instruction,
+                    tier=gemini.SMART, config={"max_output_tokens": 16384}, timeout_ms=120_000)
+                if not content:
+                    return "Document generation failed; no file was created."
+            return create_file(path, name=name, content=content)
 
         elif action == "create_folder":
             return create_folder(path, name=name)
@@ -743,6 +755,10 @@ TOOL = {
             "new_name": {
                 "type": "STRING",
                 "description": "New name for rename"
+            },
+            "instruction": {
+                "type": "STRING",
+                "description": "Full writing request for create_file, including requested detail/word count and researched source material. Use for long documents; generates the complete text before saving."
             },
             "content": {
                 "type": "STRING",

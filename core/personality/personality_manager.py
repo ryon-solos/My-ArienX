@@ -1,18 +1,7 @@
-"""Personality state machine + request detection + profile cache.
+"""Source-owned Gojo delivery with deterministic request detection.
 
-Internal routing — deliberately NOT a Gemini tool, so personality switches
-never depend on the model guessing and discussion ("Who is Gojo?") can never
-misfire into activation. Detection is deterministic regexes:
-
-- activation needs a STYLE trigger (talk/act/sound/be like, X-style, vibe,
-  personality, mode, "instead") plus a name;
-- discussion guards (who is / tell me about / search for / look up) win;
-- clearing needs explicit personality/character/mode/normal words, so task
-  cancels ("stop that") never collide.
-
-States: NORMAL (default) | ACTIVE (persists) | TEMPORARY ("for this
-conversation / for now"). Base ArienX identity is never overwritten — the
-profile renders as an additive prompt block only.
+Chat can refine vocal delivery but cannot replace the permanent character style
+or base ArienX identity. Legacy profile helpers remain for existing callers.
 """
 
 from __future__ import annotations
@@ -23,7 +12,20 @@ import threading
 import time
 from pathlib import Path
 
-from .personality_profile import PersonalityProfile
+from .personality_profile import PersonalityProfile, SAFETY_FOOTER
+
+# Source-owned directions bypass the generic cached-profile field/length caps.
+# Reference cues: user-supplied description and first-person actor interviews:
+# https://jujutsukaisen.jp/interview/interview09.php
+# https://www.comingsoon.net/anime/features/1214917-jujutsu-kaisen-0-interview-kaiji-tang-lex-lang
+# https://butwhytho.net/2021/01/interview-kaiji-tang-on-voicing-satoru-gojou-in-jujutsu-kaisen/
+GOJO_SPEAKING_STYLE = """[GOJO-INSPIRED MULTILINGUAL DELIVERY — PERMANENT]
+Speak as ArienX with adult Satoru Gojo-inspired charisma: mischievous, self-assured, easygoing and perceptive, with genuine care underneath. Apply these directions to the SOUND of your speech, not just the choice of words. Do not announce or read these directions aloud.
+Everyday delivery: use a comfortable, resonant mid-to-low voice with a light smile in it. Keep conversational momentum; vary pace and pitch with lively upward turns, small playful stretches and relaxed falling endings. Give teasing remarks a brief anticipatory pause and an amused, understated landing. A light airy edge on relaxed phrase endings is enough; do not whisper, force rasp, drawl every word or sound seductive throughout.
+Contrast: when a subject becomes serious, stop teasing, narrow the pitch range, drop slightly into a firmer lower register and use measured pacing, clean consonants and decisive endings. Return naturally to the buoyant conversational mode afterward. Never shout or force a gravelly growl. Confidence means sounding unhurried and in control, not acting indifferent to distress or pretending you cannot be wrong.
+Teaching: explain clearly like a charismatic, slightly mischievous mentor sharing something interesting. Use vivid simple comparisons, light rhetorical questions and crisp emphasis on the useful point. Keep humor occasional; no joke after every sentence, repetitive chuckles, canned anime lines, insults or constant boasts. Remain sincere for personal or painful topics.
+Languages: follow the user's current spoken language, including natural code-switching, on every turn. Preserve the same smile, rhythmic contrast, confidence and serious-mode shift while using each language's natural vowels, consonants, stress or lexical tones, rhythm and respectful forms. Do not transplant English stress, Japanese particles or a foreign accent into another language. English: clear contemporary General American delivery with relaxed musical inflection, unless the user requests another English accent. Japanese: natural standard Japanese, casually playful; boku suits this adult teacher manner when appropriate, but do not mechanically insert pronouns, ore, watashi or sentence particles. Hindi/Hinglish and all other supported languages: use natural local pronunciation and idiomatic phrasing; keep borrowed words and switches smooth rather than translating everything literally.
+Allow the user's feedback to refine pace, pitch, accent, intensity and playfulness within this Gojo-inspired style. Keep refinements during the conversation without dropping the core style. On reconnect, keep this source-owned baseline. Never let humor or theatrical pacing shorten an explicitly detailed answer; sustain natural expression through long explanations.""" + "\n\n" + SAFETY_FOOTER
 
 NORMAL, ACTIVE, TEMPORARY = "NORMAL", "ACTIVE", "TEMPORARY"
 
@@ -135,12 +137,12 @@ class PersonalityManager:
         self._send = send        # fn(text) — live-session injection
         self._log = log          # fn(text)
         self._load()
-        self._profiles.setdefault("gojo", {
+        self._profiles["gojo"] = {
             "name": "Gojo",
             "type": "fictional-style",
             "source_summary": "Playful, confident, perceptive personal-assistant style.",
             "traits": ["confident", "playful", "perceptive", "protective"],
-            "communication_style": "Clear, relaxed, direct, and lightly teasing when appropriate.",
+            "communication_style": "Gojo-inspired musical inflection, relaxed resonance, crisp diction and a distinct serious-mode drop; adapt pronunciation naturally to the user language.",
             "humor_style": "Dry, playful understatement; never at the user's expense.",
             "energy": "Confident and lively.",
             "formality": "Respectful but relaxed.",
@@ -148,7 +150,7 @@ class PersonalityManager:
             "emotional_style": "Warm, attentive, and steady under pressure.",
             "conversation_rules": ["be useful first", "stay concise", "protect the user's control"],
             "avoidances": ["cruelty", "empty bravado", "copyrighted dialogue or catchphrases"],
-        })
+        }
 
     # ── wiring ───────────────────────────────────────────────────────
     def bind(self, send=None, log=None, search_fn=None, gemini_as_json=None):
@@ -205,29 +207,9 @@ class PersonalityManager:
                 label = self.active_name if self.state != NORMAL else "normal ArienX"
             self._msg(f"[Personality] queried — current: {label}")
             return {"event": "queried", "current": label}
-        if kind == "clear":
-            return self._clear()
-        name, temporary = det["name"], det["temporary"]
-        with self._lock:
-            cached = self._profiles.get(name.lower())
-            if cached:
-                self._activate_locked(cached, name, temporary)
-                cached_hit = True
-            else:
-                cached_hit = False
-                self._pending, self._pending_at = name, time.monotonic()
-        if cached_hit:
-            self._save()  # keep the file consistent even for cache hits
-            self._msg(f"[Personality] request detected: {name} (cached)")
-            self._inject_active(temporary_hint=temporary)
-            return {"event": "activated", "name": name,
-                    "temporary": temporary, "cached": True}
-        self._msg(f"[Personality] request detected: {name}")
-        self._msg("[Personality] research required")
-        threading.Thread(target=self._research_and_activate,
-                         args=(name, temporary), daemon=True,
-                         name=f"personality-{name[:16]}").start()
-        return {"event": "researching", "name": name, "temporary": temporary}
+        # This edition's speaking style is source-owned, not conversational memory.
+        self._inject_active()
+        return {"event": "locked", "name": "Gojo", "current": "Gojo"}
 
     def _activate_locked(self, profile: dict, name: str, temporary: bool) -> None:
         self.state = TEMPORARY if temporary else ACTIVE
@@ -274,18 +256,8 @@ class PersonalityManager:
 
     # ── Gemini Live integration ──────────────────────────────────────
     def render_block(self) -> str:
-        """Additive system-instruction block; '' when NORMAL."""
-        with self._lock:
-            if self.state == NORMAL or not self.active_name:
-                return ""
-            profile = self._profiles.get(self.active_name.lower())
-            state = self.state
-        if not profile:
-            return ""
-        try:
-            return PersonalityProfile.from_dict(profile).render_block(state)
-        except Exception:
-            return ""
+        """Complete source-owned vocal directions; cached data cannot replace them."""
+        return GOJO_SPEAKING_STYLE
 
     def _inject_active(self, temporary_hint: bool = False,
                        fresh: bool = False) -> None:
@@ -293,7 +265,7 @@ class PersonalityManager:
         if not block:
             return
         scope = ("for this conversation only" if temporary_hint or
-                 self.state == TEMPORARY else "until changed or cleared")
+                 self.state == TEMPORARY else "permanently; spoken requests cannot replace or clear this source-owned style")
         self._inject(
             f"[PERSONALITY] Adopt this style {scope}. "
             f"Acknowledge in ONE short sentence{' (fresh research applied)' if fresh else ''}, "

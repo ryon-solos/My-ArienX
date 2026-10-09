@@ -23,6 +23,7 @@ config/whatsapp_web/
 # ── Personal data the assistant accumulates about you ─────────────────────────
 memory/long_term.json
 memory/chats.json
+memory/todo_lists.json
 memory/personality_profiles.json
 memory/cloud_safe.json
 memory/*.db
@@ -66,3 +67,32 @@ screenshots/
 # ── Local backups. Never commit these (may sit next to live config). ──────
 *.bak
 *.tmp
+
+# Mobile and cloud build output / private signing material
+node_modules/
+.netlify/
+cloud/.test-build/
+mobile/.dart_tool/
+mobile/.flutter-plugins*
+mobile/android/local.properties
+mobile/android/key.properties
+*.jks
+config/mobile-signing.password
+
+releases/mobile/*.apk
+
+releases/mobile/*.aab
+
+cloud/public/download/*.apk
+
+# Private runtime state, screenshots, signing and local machine settings
+config/*
+!config/__init__.py
+!config/jarvis.ico
+!config/jarvis.png
+memory/*.json
+memory/*.sqlite*
+whatsapp_*.png
+*.keystore
+mobile/android/.gradle/
+ALTEX-CODE-main/ALTREX-CODE/docs/qa/live-providers.json

@@ -338,7 +338,6 @@ ArienX/
 │   ├── youtube_video.py      # YouTube playback control
 │   ├── game_updater.py       # Game update management (Steam / Epic)
 │   ├── code_helper.py        # Code review and generation
-│   ├── dev_agent.py          # Developer task agent
 │   └── desktop.py            # Desktop and taskbar control
 ├── memory/
 │   ├── memory_manager.py     # Load/save long_term.json — sessions, monitors, identity

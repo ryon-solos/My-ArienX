@@ -12,6 +12,9 @@ import time
 from pathlib import Path
 
 import psutil
+from core.activity import activity_notice
+from core.todo_panel import TodoLists, TodoPanel
+from memory.todo_store import TodoStore
 
 if platform.system() == "Windows":
     _WIN_HIDE: dict = {"creationflags": subprocess.CREATE_NO_WINDOW}
@@ -32,6 +35,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QPushButton, QScrollArea, QSizePolicy, QSplitter,
     QStackedWidget, QTextEdit, QVBoxLayout, QWidget, QProgressBar, QListWidget,
     QListWidgetItem, QInputDialog, QDialog, QCheckBox, QFormLayout, QMessageBox,
+    QTreeWidget, QTreeWidgetItem, QGraphicsOpacityEffect, QSpinBox,
 )
 
 try:
@@ -1046,7 +1050,9 @@ class LogWidget(QTextEdit):
             return True
 
     def append_log(self, text: str):
-        self._sig.emit(text)
+        notice = activity_notice(text, self._ai_name_lc)
+        if notice is not None:
+            self._sig.emit(notice)
 
     def append_chat(self, speaker: str, text: str):
         """Conversation path: explicit speaker, never prefix-sniffed."""
@@ -3037,8 +3043,11 @@ class RemoteKeyOverlay(QWidget):
 class MainWindow(QMainWindow):
     _log_sig        = pyqtSignal(str)
     _chat_sig       = pyqtSignal(str, str)   # (speaker, text) — explicit conversation path
+    _pet_sig = pyqtSignal(str, str)
     _state_sig      = pyqtSignal(str)
     _content_sig    = pyqtSignal(str, str)   # (title, text) — thread-safe content display
+    _worker_monitor_sig = pyqtSignal(object) # worker snapshots → bottom-center monitor
+    _apps_sig       = pyqtSignal()
     _reconfig_sig   = pyqtSignal()           # trigger setup overlay from any thread
     _camera_sig     = pyqtSignal(bytes)      # show camera frame preview (small overlay)
     _cam_stream_sig = pyqtSignal(bool)       # True=start live stream, False=stop
@@ -3051,11 +3060,13 @@ class MainWindow(QMainWindow):
     _quiz_hide_sig  = pyqtSignal()
     _review_sig     = pyqtSignal(str, str, object, object)  # document review payload
     _vision_sig     = pyqtSignal(object)  # real screen/camera backend state
+    _quit_sig = pyqtSignal()
     _chat_refresh_sig = pyqtSignal(str, object)  # local-chat store → UI thread
 
     def __init__(self, face_path: str):
         super().__init__()
         self._face_path = face_path
+        self._todo_store = TodoStore()
 
         # Load customization from config
         _cfg = _read_full_config()
@@ -3078,6 +3089,7 @@ class MainWindow(QMainWindow):
         )
 
         self.on_text_command   = None
+        self._apps_workspace = None
         self.on_remote_clicked = None   # callable: () -> (url, key) | None
         self.on_interrupt      = None   # callable: () -> None — stop JARVIS mid-speech
         self.on_voice_change   = None   # callable: () -> None — rebuild session with new voice
@@ -3086,6 +3098,7 @@ class MainWindow(QMainWindow):
         self.on_chat_create    = None   # callable: () -> (chat, messages)
         self.on_chat_select    = None   # callable: (id) -> (chat, messages)
         self.on_chat_rename    = None   # callable: (id, title) -> chat
+        self.on_chat_cloud_delete = None
         self.on_chat_delete    = None   # callable: (id) -> (chat, messages)
         self._confirm_overlay  = None   # live ConfirmBanner, if one is on screen
         self.get_plugins       = None   # callable: () -> list[dict], set by JarvisLive
@@ -3099,6 +3112,16 @@ class MainWindow(QMainWindow):
         self._current_file: str | None = None
         self._remote_overlay: RemoteKeyOverlay | None = None
         self._customize_overlay: CustomizeOverlay | None = None
+        from core.task_pet import TaskPet
+        self._pet_enabled = bool(_cfg.get("task_pet_enabled", True))
+        self._pet = TaskPet(BASE_DIR / "assets" / "pets" / "gojo", self)
+        self._pet.set_scale(_cfg.get("task_pet_scale", 100))
+        self._pet.hide_requested.connect(lambda: self._set_pet_enabled(False))
+        self._pet.mute_requested.connect(self._toggle_mute)
+        self._pet.interrupt_requested.connect(self._interrupt_response)
+        self._pet.size_requested.connect(self._set_pet_scale)
+        QApplication.instance().aboutToQuit.connect(self._pet.close)
+        self._pet_sig.connect(self._pet.task_event)
 
         central = QWidget()
         central.setStyleSheet(f"background: {C.BG};")
@@ -3207,6 +3230,8 @@ class MainWindow(QMainWindow):
         self._chat_sig.connect(self._log.append_chat)
         self._state_sig.connect(self._apply_state)
         self._content_sig.connect(self._show_content)
+        self._worker_monitor_sig.connect(self._show_worker_monitor)
+        self._apps_sig.connect(self._show_apps_workspace)
         self._reconfig_sig.connect(self._show_setup)
         self._camera_sig.connect(self._show_camera_frame)
         self._confirm_sig.connect(self._show_confirm_banner)
@@ -3220,6 +3245,7 @@ class MainWindow(QMainWindow):
         self._review_sig.connect(self._show_review)
         self._vision_sig.connect(self._apply_vision_status)
         self._chat_refresh_sig.connect(self.refresh_chats)
+        self._quit_sig.connect(QApplication.instance().quit)
         self._cam_stop = threading.Event()
         self._cam_ready = threading.Event()
         self._cam_latest = b""
@@ -3244,6 +3270,40 @@ class MainWindow(QMainWindow):
         sc_full.activated.connect(self._toggle_fullscreen)
         sc_intr = QShortcut(QKeySequence("Escape"), self)
         sc_intr.activated.connect(self._do_interrupt)
+        QTimer.singleShot(0, self._start_pet)
+        if self._ready:
+            QTimer.singleShot(0, self._show_welcome)
+
+    def _start_pet(self):
+        if self._pet_enabled:
+            self._pet.show()
+            self._pet.task_event("waving")
+
+    def _set_pet_enabled(self, enabled):
+        from memory.config_manager import _patch_config
+        self._pet_enabled = bool(enabled)
+        _patch_config(task_pet_enabled=self._pet_enabled)
+        self._pet.setVisible(self._pet_enabled)
+        self._pet_btn.setText("GOJO PET: " + ("ON" if self._pet_enabled else "OFF"))
+
+    def _toggle_proactive_chat(self):
+        from memory.config_manager import _patch_config
+        self._proactive_chat_enabled = not self._proactive_chat_enabled
+        _patch_config(proactive_chat=self._proactive_chat_enabled)
+        self._proactive_chat_btn.setText("PROACTIVE CHAT: " + ("ON" if self._proactive_chat_enabled else "OFF"))
+
+    def _set_pet_scale(self, percent):
+        from memory.config_manager import _patch_config
+        self._pet.set_scale(percent)
+        percent = self._pet.scale_percent
+        _patch_config(task_pet_scale=percent)
+        self._pet_size.blockSignals(True)
+        self._pet_size.setValue(percent)
+        self._pet_size.blockSignals(False)
+
+    def closeEvent(self, event):
+        self._pet.close()
+        super().closeEvent(event)
 
     def _show_camera_frame(self, img_bytes: bytes):
         """Slot — display camera preview overlay (main thread)."""
@@ -3719,6 +3779,8 @@ class MainWindow(QMainWindow):
         # Clipboard panel — bottom-center
         if hasattr(self, '_clipboard_panel') and self._clipboard_panel.isVisible():
             self._position_clipboard_panel()
+        if hasattr(self, "_welcome") and self._welcome.isVisible():
+            self._welcome.setGeometry(cw.rect())
         # Quick drawer — reposition if open
         if hasattr(self, '_quick_drawer') and self._quick_drawer.isVisible():
             self._position_quick_drawer()
@@ -3804,6 +3866,14 @@ class MainWindow(QMainWindow):
         self._drawer_btn.setCheckable(True)
         self._drawer_btn.clicked.connect(self._toggle_drawer)
         lay.addWidget(self._drawer_btn)
+        self._apps_btn = QPushButton("APPS")
+        self._apps_btn.setFixedHeight(26)
+        self._apps_btn.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+        self._apps_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._apps_btn.setToolTip("Open isolated extension applications")
+        self._apps_btn.setStyleSheet(f"QPushButton {{ background: transparent; color: {C.PRI}; border: 1px solid {C.BORDER}; border-radius: 4px; padding: 0 6px; }} QPushButton:hover {{ border-color: {C.PRI}; background: {C.PRI_GHO}; }}")
+        self._apps_btn.clicked.connect(self._show_apps_workspace)
+        lay.addWidget(self._apps_btn)
         lay.addStretch()
 
         mid = QVBoxLayout(); mid.setSpacing(1)
@@ -3842,6 +3912,13 @@ class MainWindow(QMainWindow):
         right_col.addWidget(self._vision_status_lbl)
         lay.addLayout(right_col)
         return w
+
+    def _show_apps_workspace(self):
+        from extensions.workspace import AppsWorkspace
+        if self._apps_workspace is None:
+            self._apps_workspace = AppsWorkspace(self)
+        self._apps_workspace.refresh()
+        self._apps_workspace.show(); self._apps_workspace.raise_(); self._apps_workspace.activateWindow()
 
     def _tick_clock(self):
         self._clock_lbl.setText(time.strftime("%H:%M:%S"))
@@ -3902,18 +3979,22 @@ class MainWindow(QMainWindow):
         lay.addSpacing(4)
 
         self._chat_list = QListWidget()
-        self._chat_list.setFont(QFont("Courier New", 9))
+        self._chat_list.setFont(QFont("Courier New", 11))
         self._chat_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._chat_list.setStyleSheet(f"QListWidget {{ background: {C.PANEL2}; color: {C.TEXT}; border: 1px solid {C.BORDER}; }} QListWidget::item:selected {{ background: {C.PRI_GHO}; color: {C.PRI}; }}")
+        self._chat_list.setStyleSheet(f"QListWidget {{ background: {C.PANEL2}; color: {C.TEXT}; border: 1px solid {C.BORDER}; }} QListWidget::item {{ padding: 8px 6px; }} QListWidget::item:selected {{ background: {C.PRI_GHO}; color: {C.PRI}; }}")
         self._chat_list.itemClicked.connect(self._select_chat_item)
         lay.addWidget(self._chat_list, stretch=1)
+        self._todo_sidebar = TodoLists(self._todo_store, palette=C)
+        self._todo_sidebar.opened.connect(self._show_todo_list)
+        lay.addWidget(self._todo_sidebar)
         chat_row = QHBoxLayout(); chat_row.setSpacing(3)
-        for label, handler in (("+", self._create_chat), ("RENAME", self._rename_selected_chat), ("DEL", self._delete_selected_chat)):
+        for label, handler in (("+", self._create_chat), ("RENAME", self._rename_selected_chat), ("DEL", self._delete_selected_chat), ("CLOUD DEL", self._delete_selected_cloud_chat)):
             button = QPushButton(label)
-            button.setFixedHeight(22)
-            button.setFont(QFont("Courier New", 6, QFont.Weight.Bold))
+            button.setFixedHeight(28)
+            button.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setStyleSheet(f"QPushButton {{ color: {C.TEXT_MED}; background: {C.PANEL2}; border: 1px solid {C.BORDER}; }} QPushButton:hover {{ color: {C.PRI}; border-color: {C.PRI}; }}")
+            button.setToolTip("Delete locally; keep the cloud copy" if label == "DEL" else "Delete locally and from your cloud account" if label == "CLOUD DEL" else label)
             button.clicked.connect(handler)
             chat_row.addWidget(button)
         lay.addLayout(chat_row)
@@ -3992,6 +4073,17 @@ class MainWindow(QMainWindow):
         chat, messages = self.on_chat_delete(str(item.data(Qt.ItemDataRole.UserRole)))
         if chat:
             self.refresh_chats(chat["id"], messages)
+
+    def _delete_selected_cloud_chat(self):
+        item = self._chat_list.currentItem()
+        if not item or not self.on_chat_cloud_delete:
+            return
+        if QMessageBox.question(self, "Delete cloud chat", "Delete this conversation locally and from your cloud account? This cannot be undone.") != QMessageBox.StandardButton.Yes:
+            return
+        chat, messages = self.on_chat_cloud_delete(str(item.data(Qt.ItemDataRole.UserRole)))
+        if chat:
+            self.refresh_chats(chat["id"], messages)
+
     def _build_right_panel(self) -> QWidget:
         w = QWidget()
         w.setFixedWidth(_RIGHT_W)
@@ -4080,7 +4172,8 @@ class MainWindow(QMainWindow):
             QPushButton:hover {{ color: {C.PRI}; border-color: {C.BORDER_B}; }}
         """
 
-        w = QWidget(self.centralWidget())
+        w = QDialog(self)
+        w.setWindowTitle("Settings & Controls")
         w.setObjectName("QuickDrawer")
         w.setStyleSheet(f"""
             QWidget#QuickDrawer {{
@@ -4092,13 +4185,31 @@ class MainWindow(QMainWindow):
         """)
         w.hide()
 
-        lay = QVBoxLayout(w)
+        outer = QVBoxLayout(w)
+        title = QLabel("SETTINGS & CONTROLS")
+        title.setFont(QFont("Courier New", 13, QFont.Weight.Bold))
+        title.setStyleSheet(f"color: {C.PRI};")
+        outer.addWidget(title)
+        scroll = QScrollArea(w)
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(f"QScrollArea {{ border: none; background: {C.DARK}; }}")
+        content = QWidget()
+        content.setStyleSheet(f"background: {C.DARK};")
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
+        close = QPushButton("Close settings")
+        close.setFont(QFont("Courier New", 10))
+        close.setStyleSheet(f"color: {C.PRI}; background: {C.PANEL2}; padding: 8px; border: 1px solid {C.BORDER_B};")
+        close.clicked.connect(lambda: self._toggle_drawer(False))
+        outer.addWidget(close)
+        w.finished.connect(lambda: self._drawer_btn.setChecked(False))
+        lay = QVBoxLayout(content)
         lay.setContentsMargins(10, 8, 10, 10)
         lay.setSpacing(5)
 
         def _section(text):
             label = QLabel(text)
-            label.setFont(QFont("Courier New", 6, QFont.Weight.Bold))
+            label.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
             label.setStyleSheet(f"color: {C.PRI_DIM}; background: transparent; border-bottom: 1px solid {C.BORDER}; padding-top: 4px;")
             return label
 
@@ -4116,17 +4227,17 @@ class MainWindow(QMainWindow):
         profile_btn.clicked.connect(self._open_profile_settings)
         lay.addWidget(profile_btn)
 
-        self._dev_btn = QPushButton()
-        self._dev_btn.setFixedHeight(26)
-        self._dev_btn.setFont(QFont("Courier New", 7))
-        self._dev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._dev_btn.clicked.connect(self._toggle_developer_mode)
-        lay.addWidget(self._dev_btn)
-        self._refresh_developer_btn()
+        ide_btn = QPushButton("⌘  OPEN ALTREX CODE IDE")
+        ide_btn.setFixedHeight(26)
+        ide_btn.setFont(QFont("Courier New", 9))
+        ide_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        ide_btn.setStyleSheet(_BTN_STYLE_PRI)
+        ide_btn.clicked.connect(self._open_altrex_ide)
+        lay.addWidget(ide_btn)
 
         model_status_btn = QPushButton("⌁  MODEL / PROVIDER STATUS")
         model_status_btn.setFixedHeight(26)
-        model_status_btn.setFont(QFont("Courier New", 7))
+        model_status_btn.setFont(QFont("Courier New", 9))
         model_status_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         model_status_btn.setStyleSheet(_BTN_STYLE_DIM)
         model_status_btn.clicked.connect(self._show_provider_status)
@@ -4144,7 +4255,7 @@ class MainWindow(QMainWindow):
 
         fs_btn = QPushButton("⛶  FULLSCREEN  [F11]")
         fs_btn.setFixedHeight(26)
-        fs_btn.setFont(QFont("Courier New", 7))
+        fs_btn.setFont(QFont("Courier New", 9))
         fs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         fs_btn.setStyleSheet(_BTN_STYLE_DIM)
         fs_btn.clicked.connect(self._toggle_fullscreen)
@@ -4152,7 +4263,7 @@ class MainWindow(QMainWindow):
 
         sc_btn = QPushButton("⊞  CREATE DESKTOP SHORTCUT")
         sc_btn.setFixedHeight(26)
-        sc_btn.setFont(QFont("Courier New", 7))
+        sc_btn.setFont(QFont("Courier New", 9))
         sc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         sc_btn.setStyleSheet(_BTN_STYLE_DIM)
         sc_btn.clicked.connect(self._create_desktop_shortcut)
@@ -4160,14 +4271,14 @@ class MainWindow(QMainWindow):
 
         self._autostart_btn = QPushButton("◉  AUTO-START: OFF")
         self._autostart_btn.setFixedHeight(26)
-        self._autostart_btn.setFont(QFont("Courier New", 7))
+        self._autostart_btn.setFont(QFont("Courier New", 9))
         self._autostart_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._autostart_btn.clicked.connect(self._toggle_autostart)
         lay.addWidget(self._autostart_btn)
 
         cust_btn = QPushButton("⚙  CUSTOMISE ASSISTANT")
         cust_btn.setFixedHeight(26)
-        cust_btn.setFont(QFont("Courier New", 7))
+        cust_btn.setFont(QFont("Courier New", 9))
         cust_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         cust_btn.setStyleSheet(_BTN_STYLE_DIM)
         cust_btn.clicked.connect(self._open_customize)
@@ -4175,7 +4286,7 @@ class MainWindow(QMainWindow):
 
         self._brief_btn = QPushButton()
         self._brief_btn.setFixedHeight(26)
-        self._brief_btn.setFont(QFont("Courier New", 7))
+        self._brief_btn.setFont(QFont("Courier New", 9))
         self._brief_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._brief_btn.clicked.connect(self._toggle_brief)
         lay.addWidget(self._brief_btn)
@@ -4183,14 +4294,14 @@ class MainWindow(QMainWindow):
         # ── Wake word ──────────────────────────────────────────────────────────
         self._wake_btn = QPushButton()
         self._wake_btn.setFixedHeight(26)
-        self._wake_btn.setFont(QFont("Courier New", 7))
+        self._wake_btn.setFont(QFont("Courier New", 9))
         self._wake_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._wake_btn.clicked.connect(self._toggle_wake_word)
         lay.addWidget(self._wake_btn)
 
         self._wake_sleep_btn = QPushButton()
         self._wake_sleep_btn.setFixedHeight(26)
-        self._wake_sleep_btn.setFont(QFont("Courier New", 7))
+        self._wake_sleep_btn.setFont(QFont("Courier New", 9))
         self._wake_sleep_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._wake_sleep_btn.clicked.connect(self._tap_wake_manual)
         lay.addWidget(self._wake_sleep_btn)
@@ -4204,7 +4315,7 @@ class MainWindow(QMainWindow):
 
         self._ptt_btn = QPushButton()
         self._ptt_btn.setFixedHeight(26)
-        self._ptt_btn.setFont(QFont("Courier New", 7))
+        self._ptt_btn.setFont(QFont("Courier New", 9))
         self._ptt_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._ptt_btn.clicked.connect(self._toggle_ptt)
         lay.addWidget(self._ptt_btn)
@@ -4213,17 +4324,47 @@ class MainWindow(QMainWindow):
 
         self._hud_btn = QPushButton()
         self._hud_btn.setFixedHeight(26)
-        self._hud_btn.setFont(QFont("Courier New", 7))
+        self._hud_btn.setFont(QFont("Courier New", 9))
         self._hud_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._hud_btn.clicked.connect(self._toggle_hud_style)
         lay.addWidget(self._hud_btn)
         self._refresh_hud_btn()
 
+        self._pet_btn = QPushButton("GOJO PET: " + ("ON" if self._pet_enabled else "OFF"))
+        self._pet_btn.setFixedHeight(28)
+        self._pet_btn.setFont(QFont("Courier New", 9))
+        self._pet_btn.setStyleSheet(_BTN_STYLE_PRI)
+        self._pet_btn.clicked.connect(lambda: self._set_pet_enabled(not self._pet_enabled))
+        lay.addWidget(self._pet_btn)
+        self._proactive_chat_enabled = bool(_read_full_config().get("proactive_chat", True))
+        self._proactive_chat_btn = QPushButton()
+        self._proactive_chat_btn.setFixedHeight(28)
+        self._proactive_chat_btn.setFont(QFont("Courier New", 9))
+        self._proactive_chat_btn.setStyleSheet(_BTN_STYLE_PRI)
+        self._proactive_chat_btn.setToolTip("Occasional memory-based conversation first check-in after about 20 seconds; later after two minutes idle, at most once per five minutes. Paused while muted or asleep.")
+        self._proactive_chat_btn.clicked.connect(self._toggle_proactive_chat)
+        self._proactive_chat_btn.setText("PROACTIVE CHAT: " + ("ON" if self._proactive_chat_enabled else "OFF"))
+        lay.addWidget(self._proactive_chat_btn)
+        pet_size_row = QHBoxLayout()
+        pet_size_label = QLabel("PET SIZE")
+        pet_size_label.setStyleSheet(f"color: {C.TEXT_MED};")
+        pet_size_row.addWidget(pet_size_label)
+        self._pet_size = QSpinBox()
+        self._pet_size.setRange(50, 200)
+        self._pet_size.setSingleStep(10)
+        self._pet_size.setSuffix("%")
+        self._pet_size.setValue(self._pet.scale_percent)
+        self._pet_size.setAccessibleName("Pet size")
+        self._pet_size.setStyleSheet(f"color: {C.PRI}; background: {C.PANEL2}; padding: 4px;")
+        self._pet_size.valueChanged.connect(self._set_pet_scale)
+        pet_size_row.addWidget(self._pet_size)
+        lay.addLayout(pet_size_row)
+
         lay.addWidget(_section("ASSISTANT & EXTENSIONS"))
 
         audio_btn = QPushButton("🎧  AUDIO DEVICES")
         audio_btn.setFixedHeight(26)
-        audio_btn.setFont(QFont("Courier New", 7))
+        audio_btn.setFont(QFont("Courier New", 9))
         audio_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         audio_btn.setStyleSheet(_BTN_STYLE_DIM)
         audio_btn.clicked.connect(self._open_audio_devices)
@@ -4231,7 +4372,7 @@ class MainWindow(QMainWindow):
 
         mem_btn = QPushButton("🧠  MEMORY")
         mem_btn.setFixedHeight(26)
-        mem_btn.setFont(QFont("Courier New", 7))
+        mem_btn.setFont(QFont("Courier New", 9))
         mem_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         mem_btn.setStyleSheet(_BTN_STYLE_DIM)
         mem_btn.clicked.connect(self._open_memory_panel)
@@ -4239,7 +4380,7 @@ class MainWindow(QMainWindow):
 
         plugin_btn = QPushButton("🧩  PLUGINS")
         plugin_btn.setFixedHeight(26)
-        plugin_btn.setFont(QFont("Courier New", 7))
+        plugin_btn.setFont(QFont("Courier New", 9))
         plugin_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         plugin_btn.setStyleSheet(_BTN_STYLE_DIM)
         plugin_btn.clicked.connect(self._open_plugin_manager)
@@ -4247,7 +4388,7 @@ class MainWindow(QMainWindow):
 
         settings_btn = QPushButton("⚙  PLUGIN SETTINGS")
         settings_btn.setFixedHeight(26)
-        settings_btn.setFont(QFont("Courier New", 7))
+        settings_btn.setFont(QFont("Courier New", 9))
         settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         settings_btn.setStyleSheet(_BTN_STYLE_DIM)
         settings_btn.clicked.connect(self._open_plugin_settings)
@@ -4255,15 +4396,23 @@ class MainWindow(QMainWindow):
 
         provider_btn = QPushButton("◈  AI MODEL PROVIDERS")
         provider_btn.setFixedHeight(26)
-        provider_btn.setFont(QFont("Courier New", 7))
+        provider_btn.setFont(QFont("Courier New", 9))
         provider_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         provider_btn.setStyleSheet(_BTN_STYLE_DIM)
         provider_btn.clicked.connect(self._open_provider_settings)
         lay.addWidget(provider_btn)
 
+        worker_models_btn = QPushButton("◈  WORKER MODEL ROUTING")
+        worker_models_btn.setFixedHeight(26)
+        worker_models_btn.setFont(QFont("Courier New", 9))
+        worker_models_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        worker_models_btn.setStyleSheet(_BTN_STYLE_DIM)
+        worker_models_btn.clicked.connect(self._open_worker_model_settings)
+        lay.addWidget(worker_models_btn)
+
         cloud_btn = QPushButton("☁  CLOUD CORE")
         cloud_btn.setFixedHeight(26)
-        cloud_btn.setFont(QFont("Courier New", 7))
+        cloud_btn.setFont(QFont("Courier New", 9))
         cloud_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         cloud_btn.setStyleSheet(_BTN_STYLE_DIM)
         cloud_btn.clicked.connect(self._open_cloud_core_settings)
@@ -4283,35 +4432,12 @@ class MainWindow(QMainWindow):
             self._quick_drawer.hide()
             self._drawer_btn.setChecked(False)
 
-    def mousePressEvent(self, event):
-        """Close the profile/settings drawer when the user clicks elsewhere."""
-        if (hasattr(self, "_quick_drawer") and self._quick_drawer.isVisible()
-                and event.button() == Qt.MouseButton.LeftButton
-                and not self._quick_drawer.geometry().contains(event.pos())
-                and not self._drawer_btn.geometry().contains(event.pos())):
-            self._toggle_drawer(False)
-        super().mousePressEvent(event)
-
     def eventFilter(self, obj, event):
-        if (obj is self.centralWidget() and event.type() == QEvent.Type.MouseButtonPress
-                and self._quick_drawer.isVisible()
-                and not self._quick_drawer.geometry().contains(event.position().toPoint())):
-            self._toggle_drawer(False)
         return super().eventFilter(obj, event)
 
-    def _refresh_developer_btn(self):
-        from memory.config_manager import get_developer_mode
-        enabled = get_developer_mode()
-        self._dev_btn.setText("⌁  DEVELOPER MODE: " + ("ON" if enabled else "OFF"))
-        self._dev_btn.setStyleSheet(
-            f"QPushButton {{ color: {C.GREEN if enabled else C.TEXT_MED}; background: transparent; border: 1px solid {C.GREEN_D if enabled else C.BORDER}; text-align: left; padding: 0 8px; }}")
-
-    def _toggle_developer_mode(self):
-        from memory.config_manager import get_developer_mode, save_developer_mode
-        enabled = not get_developer_mode()
-        save_developer_mode(enabled)
-        self._refresh_developer_btn()
-        self._log.append_log("SYS: Developer mode " + ("enabled — runtime routing will be shown." if enabled else "disabled — normal assistant view restored."))
+    def _open_altrex_ide(self):
+        from core.altrex_ide import launch
+        self._log.append_log("IDE: " + launch())
 
     def _show_provider_status(self):
         from core.external_router import provider_status
@@ -4368,33 +4494,67 @@ class MainWindow(QMainWindow):
         form.addRow(test)
         dialog.exec()
 
+    def _open_worker_model_settings(self):
+        from memory.config_manager import WORKER_ROLES, get_worker_models, save_worker_models
+        models = get_worker_models()
+        dialog = QDialog(self); dialog.setWindowTitle("ArienX worker model routing")
+        dialog.setStyleSheet(f"QDialog {{ background: {C.DARK}; color: {C.TEXT}; }} QLineEdit {{ background: {C.PANEL2}; color: {C.TEXT}; border: 1px solid {C.BORDER}; padding: 4px; }}")
+        form = QFormLayout(dialog)
+        note = QLabel("Gemini remains the Lead Agent. Set optional OpenRouter model IDs by worker role; leave blank to use the OpenRouter default model.")
+        note.setWordWrap(True); form.addRow(note)
+        fields = {}
+        for role in WORKER_ROLES:
+            field = QLineEdit(str(models.get(role) or ""))
+            field.setPlaceholderText("Use OpenRouter default")
+            fields[role] = field; form.addRow(role.title(), field)
+        save = QPushButton("SAVE WORKER ROUTING")
+        save.clicked.connect(lambda: (save_worker_models({role: field.text() for role, field in fields.items()}), dialog.accept()))
+        form.addRow(save); dialog.exec()
+
     def _open_cloud_core_settings(self):
-        from core.cloud_bridge import get_config, provision
+        from core.cloud_bridge import PRODUCTION_CLOUD_URL, get_config, provision
         cfg = get_config()
         dialog = QDialog(self); dialog.setWindowTitle("ArienX Cloud Core")
         dialog.setStyleSheet(f"QDialog {{ background: {C.DARK}; color: {C.TEXT}; }} QLineEdit {{ background: {C.PANEL2}; color: {C.TEXT}; border: 1px solid {C.BORDER}; padding: 4px; }}")
         form = QFormLayout(dialog)
-        note = QLabel("Sign in with your invite-only Netlify Identity account to pair this desktop. ArienX creates and keeps its private device key locally; Cloud Core receives only its public key and signed heartbeats.")
+        note = QLabel("Sign in with your ArienX account to pair this desktop. ArienX creates and keeps its private device key locally; Cloud Core receives only its public key and signed heartbeats.")
         note.setWordWrap(True); form.addRow(note)
-        endpoint = QLineEdit(cfg.url); endpoint.setPlaceholderText("https://your-site.netlify.app")
-        email = QLineEdit(cfg.user_email); email.setPlaceholderText("Netlify Identity email")
-        password = QLineEdit(); password.setEchoMode(QLineEdit.EchoMode.Password); password.setPlaceholderText("Netlify Identity password")
+        endpoint = QLineEdit(cfg.url or PRODUCTION_CLOUD_URL); endpoint.setPlaceholderText(PRODUCTION_CLOUD_URL)
+        email = QLineEdit(cfg.user_email); email.setPlaceholderText("Email")
+        password = QLineEdit(); password.setEchoMode(QLineEdit.EchoMode.Password); password.setPlaceholderText("Password")
         label = QLineEdit(cfg.device_label); label.setPlaceholderText("This device name")
-        form.addRow("Cloud URL", endpoint); form.addRow("Identity email", email); form.addRow("Identity password", password); form.addRow("Device name", label)
+        advanced = QCheckBox("Advanced / developer Cloud URL")
+        endpoint_label = QLabel("Cloud URL")
+        form.addRow(advanced); form.addRow(endpoint_label, endpoint); form.addRow("Email", email); form.addRow("Password", password); form.addRow("Device name", label)
+        show_advanced = cfg.url != PRODUCTION_CLOUD_URL
+        advanced.setChecked(show_advanced); endpoint.setVisible(show_advanced); endpoint_label.setVisible(show_advanced)
+        advanced.toggled.connect(lambda visible: (endpoint.setVisible(visible), endpoint_label.setVisible(visible)))
         save = QPushButton("PAIR / RE-PAIR DEVICE")
         def pair():
             try:
-                paired = provision(endpoint.text(), email.text(), password.text(), label.text())
+                paired = provision(email.text(), password.text(), label.text(), endpoint.text() if advanced.isChecked() else "")
             except Exception as exc:
                 QMessageBox.warning(dialog, "Cloud Core", str(exc)); return
             self._log.append_log("NET: Cloud Core paired — restart ArienX to start signed heartbeats.")
             QMessageBox.information(dialog, "Cloud Core", "Device paired. Restart ArienX; Cloud Core will show it online within 30 seconds.")
         save.clicked.connect(pair); form.addRow(save)
+        mobile = QPushButton("CONNECT PHONE / MOBILE APK")
+        def connect_phone():
+            from core.mobile_dialog import MobileDialog
+            MobileDialog(dialog).exec()
+        mobile.clicked.connect(connect_phone); form.addRow(mobile)
+        telemetry = QCheckBox("Share CPU, RAM, battery, extension metadata and worker status with my Cloud Core")
+        telemetry.setChecked(bool(cfg.mobile_telemetry_enabled))
+        telemetry.setToolTip("Optional. No worker prompts/results, files, camera frames, screen captures or credentials are included.")
+        def telemetry_changed(enabled):
+            from core.cloud_bridge import get_config, _save
+            current = get_config(); current.mobile_telemetry_enabled = enabled; _save(current)
+        telemetry.toggled.connect(telemetry_changed); form.addRow(telemetry)
         check = QPushButton("CHECK CLOUD CONNECTION")
         def check_connection():
             from core.cloud_bridge import CloudBridge
-            status = CloudBridge().status()
-            QMessageBox.information(dialog, "Cloud Core", "Connected — device is online." if status and status.get("online") else "Paired, but waiting for the next ArienX heartbeat." if status else "Cloud Core connection is unavailable. Re-pair if the problem continues.")
+            bridge = CloudBridge(); status = bridge.status()
+            QMessageBox.information(dialog, "Cloud Core", "Connected — device is online." if status and status.get("online") else "Paired, but waiting for the next ArienX heartbeat." if status else bridge.last_error or "Cloud Core connection is unavailable. Re-pair if the problem continues.")
         check.clicked.connect(check_connection); form.addRow(check)
         disconnect = QPushButton("DISCONNECT THIS DEVICE")
         def disconnect_device():
@@ -4427,10 +4587,28 @@ class MainWindow(QMainWindow):
     def _position_quick_drawer(self):
         if not hasattr(self, '_quick_drawer'):
             return
-        _W = 280
-        self._quick_drawer.setFixedWidth(_W)
-        self._quick_drawer.adjustSize()
-        self._quick_drawer.setGeometry(12, 54, _W, self._quick_drawer.sizeHint().height())
+        width, height = 480, min(680, self.height() - 60)
+        center = self.frameGeometry().center()
+        self._quick_drawer.setGeometry(center.x() - width // 2, center.y() - height // 2, width, height)
+
+    def _show_welcome(self):
+        self._welcome = QLabel(f"Welcome back\n{self._assistant_name}\nBy Ryon Solos", self.centralWidget())
+        self._welcome.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._welcome.setFont(QFont("Courier New", 24, QFont.Weight.Bold))
+        self._welcome.setStyleSheet(f"background: {C.BG}; color: {C.PRI};")
+        self._welcome.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._welcome.setGeometry(self.centralWidget().rect())
+        effect = QGraphicsOpacityEffect(self._welcome)
+        self._welcome.setGraphicsEffect(effect)
+        self._welcome_anim = QPropertyAnimation(effect, b"opacity", self)
+        self._welcome_anim.setDuration(1000)
+        self._welcome_anim.setStartValue(1.0)
+        self._welcome_anim.setEndValue(0.0)
+        self._welcome_anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        self._welcome_anim.finished.connect(self._welcome.hide)
+        self._welcome.show()
+        self._welcome.raise_()
+        QTimer.singleShot(600, self._welcome_anim.start)
 
     def _build_input_row(self) -> QHBoxLayout:
         row = QHBoxLayout(); row.setSpacing(5)
@@ -4551,7 +4729,49 @@ class MainWindow(QMainWindow):
         """)
         lay.addWidget(self._content_display)
 
+        # The monitor shares the existing bottom-centre content surface. It is
+        # read-only, so worker activity never takes focus from conversation.
+        self._worker_monitor = QTreeWidget()
+        self._worker_monitor.setHeaderLabels(
+            ["TASK", "PROVIDER / MODEL", "STATUS", "TIME", "TOKENS", "PROGRESS"]
+        )
+        self._worker_monitor.setRootIsDecorated(True)
+        self._worker_monitor.setAlternatingRowColors(True)
+        self._worker_monitor.setFont(QFont("Courier New", 8))
+        self._worker_monitor.setMinimumHeight(60)
+        self._worker_monitor.setStyleSheet(f"""
+            QTreeWidget {{ background: {C.DARK}; color: {C.TEXT}; border: 1px solid {C.BORDER}; border-radius: 3px; }}
+            QHeaderView::section {{ background: {C.PANEL}; color: {C.PRI}; border: 0; border-bottom: 1px solid {C.BORDER}; padding: 3px; }}
+            QTreeWidget::item {{ padding: 3px; }}
+            QTreeWidget::item:alternate {{ background: {C.PANEL2}; }}
+        """)
+        self._worker_monitor.hide()
+        lay.addWidget(self._worker_monitor)
+        self._todo_panel = TodoPanel(self._todo_store, palette=C)
+        self._todo_panel.changed.connect(self._todo_sidebar.refresh)
+        lay.addWidget(self._todo_panel)
+        self._worker_hide_timer = QTimer(self)
+        self._worker_hide_timer.setSingleShot(True)
+        self._worker_hide_timer.timeout.connect(
+            lambda: self._content_panel.hide() if self._worker_monitor.isVisible() else None
+        )
+
         return w
+
+    def _show_todo_list(self, list_id: str):
+        try:
+            row = self._todo_store.get(list_id)
+            if row is None:
+                if not self._todo_panel.isHidden():
+                    self._content_panel.hide()
+                return
+            self._show_content("TO-DO — " + row["title"], "")
+            self._todo_panel.load(list_id)
+            self._content_display.hide()
+            self._todo_panel.show()
+            self._todo_panel.input.setFocus()
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "To-do lists", str(exc))
 
     def _show_content(self, title: str, text: str):
         """Slot — runs on Qt main thread. Updates and shows the content panel."""
@@ -4559,6 +4779,10 @@ class MainWindow(QMainWindow):
         # The panel opens below the head, so the head looks down at it. It is a
         # tiny thing that answers "did that land?" before you read a word.
         self.hud.glance(0.0, -0.85, hold=1.3)
+        self._worker_hide_timer.stop()
+        self._worker_monitor.hide()
+        self._todo_panel.hide()
+        self._content_display.show()
         self._content_title_lbl.setText(title.upper()[:48])
         self._content_ts_lbl.setText(_time.strftime("%H:%M:%S"))
         self._content_display.setPlainText(text)
@@ -4570,6 +4794,45 @@ class MainWindow(QMainWindow):
         if first_show:
             total = self._center_split.height()
             self._center_split.setSizes([max(total - 220, 120), 220])
+
+    def _show_worker_monitor(self, snapshot: dict):
+        """Qt-thread slot for live, non-interactive worker diagnostics."""
+        import time as _time
+        self._pet.workers(snapshot or {})
+        workers = list((snapshot or {}).get("workers") or [])
+        if not workers:
+            return
+        self._worker_hide_timer.stop()
+        self.hud.glance(0.0, -0.85, hold=0.4)
+        self._content_title_lbl.setText("WORKER MONITOR — " + str(snapshot.get("job_id") or "")[:10])
+        self._content_ts_lbl.setText(_time.strftime("%H:%M:%S"))
+        self._content_display.hide()
+        self._todo_panel.hide()
+        self._worker_monitor.show()
+        self._worker_monitor.clear()
+        for worker in workers:
+            item = QTreeWidgetItem([
+                str(worker.get("heading") or "Worker task"),
+                f"{worker.get('provider') or '—'} / {worker.get('model') or '—'}",
+                str(worker.get("status") or "Queued"),
+                f"{float(worker.get('elapsed_seconds') or 0):.1f}s",
+                str(worker.get("tokens") or "—"),
+                f"{int(worker.get('progress') or 0)}%",
+            ])
+            diagnostic = str(worker.get("diagnostic") or "No diagnostic output yet.")
+            item.addChild(QTreeWidgetItem(["Diagnostics", diagnostic[:1000], "", "", "", ""]))
+            if str(worker.get("status")) in ("Failed", "Cancelled"):
+                item.setExpanded(True)
+            self._worker_monitor.addTopLevelItem(item)
+        for column, width in enumerate((190, 240, 90, 58, 72, 72)):
+            self._worker_monitor.setColumnWidth(column, width)
+        first_show = not self._content_panel.isVisible()
+        self._content_panel.show()
+        if first_show:
+            total = self._center_split.height()
+            self._center_split.setSizes([max(total - 240, 120), 240])
+        if snapshot.get("idle"):
+            self._worker_hide_timer.start(45000)
 
     # ── document review ──────────────────────────────────────────────────────
     # Rendered as rich text into the content panel that already exists, rather
@@ -4595,6 +4858,7 @@ class MainWindow(QMainWindow):
 
     def _show_review(self, title: str, summary: str, findings, unclear):
         """Slot — Qt main thread. Lays a document review into the content panel."""
+        self._pet.task_event("document_review")
         e = self._esc
         parts = [f'<div style="color:{C.TEXT}; font-family:Courier New;">']
 
@@ -4647,6 +4911,10 @@ class MainWindow(QMainWindow):
         # imposing one language's rules on all of them is the bug, not the fix.
         self._content_title_lbl.setText((title or "Document")[:48])
         self._content_ts_lbl.setText(_time.strftime("%H:%M:%S"))
+        self._worker_hide_timer.stop()
+        self._worker_monitor.hide()
+        self._todo_panel.hide()
+        self._content_display.show()
         self._content_display.setHtml("".join(parts))
         self._content_display.moveCursor(
             self._content_display.textCursor().MoveOperation.Start)
@@ -4939,7 +5207,7 @@ class MainWindow(QMainWindow):
 
         lay.addWidget(_fl("[F4] Mute  ·  [F11] Fullscreen"))
         lay.addStretch()
-        lay.addWidget(_fl("By FatihMakes", C.PRI_DIM))
+        lay.addWidget(_fl("By Ryon Solos", C.PRI_DIM))
         return w
 
     def _on_file_selected(self, path: str):
@@ -5464,8 +5732,10 @@ class MainWindow(QMainWindow):
         ov.answered.connect(self._on_confirm_answered)
         self._centre_overlay(ov)
         self._confirm_overlay = ov
+        self._pet.review(True)
 
     def _hide_confirm_banner(self):
+        self._pet.review(False)
         ov = getattr(self, "_confirm_overlay", None)
         if ov is not None:
             ov.hide()
@@ -5542,11 +5812,18 @@ class MainWindow(QMainWindow):
     # ────────────────────────────────────────────────────────────────────────────
 
     def _do_interrupt(self):
+        if self._quick_drawer.isVisible():
+            self._toggle_drawer(False)
+            return
+        self._interrupt_response()
+
+    def _interrupt_response(self):
         if self.on_interrupt:
             self.on_interrupt()
 
     def _toggle_mute(self):
         self._muted = not self._muted
+        self._pet.set_muted(self._muted)
         self.hud.muted = self._muted
         self._style_mute_btn()
         if self._muted:
@@ -5584,6 +5861,7 @@ class MainWindow(QMainWindow):
             threading.Thread(target=self.on_text_command, args=(txt,), daemon=True).start()
 
     def _apply_state(self, state: str):
+        self._pet.assistant_state(state)
         self.hud.state    = state
         self.hud.speaking = (state == "SPEAKING")
 
@@ -5784,6 +6062,17 @@ class JarvisUI:
     def on_chat_rename(self, cb):
         self._win.on_chat_rename = cb
 
+    def quit(self):
+        self._win._quit_sig.emit()
+
+    @property
+    def on_chat_cloud_delete(self):
+        return self._win.on_chat_cloud_delete
+
+    @on_chat_cloud_delete.setter
+    def on_chat_cloud_delete(self, cb):
+        self._win.on_chat_cloud_delete = cb
+
     @property
     def on_chat_delete(self):
         return self._win.on_chat_delete
@@ -5889,6 +6178,9 @@ class JarvisUI:
     def notify_phone_connected(self) -> None:
         self._win.notify_phone_connected()
 
+    def pet_event(self, event: str, task_id: str = ""):
+        self._win._pet_sig.emit(event, task_id)
+
     def set_state(self, state: str):
         self._win._state_sig.emit(state)
 
@@ -5911,6 +6203,16 @@ class JarvisUI:
     def show_content(self, title: str, text: str):
         """Thread-safe: display content in the panel below the HUD."""
         self._win._content_sig.emit(title[:48], text[:4000])
+
+    def show_extensions(self) -> None:
+        """Show the separate Apps workspace without interrupting conversation."""
+        self._win._apps_sig.emit()
+
+    def show_worker_monitor(self, snapshot: dict) -> None:
+        from core.mobile_bridge import record_workers
+        record_workers(snapshot)
+        """Thread-safe live worker monitor update; it never blocks chat I/O."""
+        self._win._worker_monitor_sig.emit(dict(snapshot or {}))
 
     def show_quiz(self, topic: str, questions, grade=None) -> None:
         """Thread-safe: put an interactive quiz on the board.

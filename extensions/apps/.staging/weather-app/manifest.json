@@ -1,0 +1,8 @@
+{
+  "manifest_version": 3,
+  "name": "Weather App",
+  "version": "1.0.1",
+  "description": "Simple weather checker.",
+  "permissions": ["storage", "geolocation"],
+  "action": { "default_title": "Weather", "default_popup": "popup.html" }
+}

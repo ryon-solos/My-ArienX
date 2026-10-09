@@ -1,4 +1,4 @@
-import { acceptInvite, confirmEmail, getUser, login, logout, verifyRequestOrigin } from "@netlify/identity"
+import { acceptInvite, confirmEmail, getUser, login, logout, signup, verifyRequestOrigin } from "@netlify/identity"
 import type { Config } from "@netlify/functions"
 import { bad, json } from "./_shared/http.js"
 
@@ -12,8 +12,14 @@ export default async (req: Request) => {
   try {
     if (action === "session" && req.method === "GET") return session()
     if (req.method !== "POST") return bad("method not allowed", 405)
-    verifyRequestOrigin(req)
+    // Browser requests retain CSRF validation. Flutter's native HTTP client has
+    // no Origin header, and signup is intentionally public before a session exists.
+    if (action !== "signup" || req.headers.has("origin")) verifyRequestOrigin(req)
     const body = await req.json()
+    if (action === "signup") {
+      const user = await signup(String(body.email || ""), String(body.password || ""))
+      return json({ email: user.email, confirmation_required: !user.confirmedAt })
+    }
     if (action === "login") {
       await login(String(body.email || ""), String(body.password || ""))
       return session()
@@ -36,4 +42,4 @@ export default async (req: Request) => {
   }
 }
 
-export const config: Config = { path: ["/api/auth/session", "/api/auth/login", "/api/auth/invite", "/api/auth/confirm", "/api/auth/logout"] }
+export const config: Config = { path: ["/api/auth/session", "/api/auth/signup", "/api/auth/login", "/api/auth/invite", "/api/auth/confirm", "/api/auth/logout"] }

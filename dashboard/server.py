@@ -456,6 +456,7 @@ def _read(name: str) -> str:
 class DashboardServer:
 
     def __init__(self):
+        self.last_error = ""
         self._ip                          = _local_ip()
         self._tokens: set[str]            = set()
         self._token_keys: dict[str, str]  = {}   # auth_token → session_key
@@ -839,6 +840,19 @@ class DashboardServer:
 
     # ── serve ─────────────────────────────────────────────────────────────
 
+    async def _serve_uvicorn(self, cfg) -> bool:
+        # Uvicorn raises SystemExit on a bind failure. In a background task that
+        # would kill the shared voice/text event loop, despite being optional.
+        try:
+            await uvicorn.Server(cfg).serve()
+            return True
+        except (SystemExit, Exception) as exc:
+            self.last_error = f"Remote dashboard unavailable on port {cfg.port} ({type(exc).__name__})."
+            print(f"[Dashboard] {self.last_error} Desktop voice and text remain enabled.")
+            from core.runtime_diagnostics import event
+            event("dashboard_server_unavailable", port=cfg.port, error_type=type(exc).__name__)
+            return False
+
     async def _serve_alias(self) -> None:
         """Second HTTPS server on PORT+1 sharing the same app and in-memory state.
         Chrome HTTPS-upgrades any bare IP:PORT the user types, so this port also needs TLS.
@@ -851,7 +865,7 @@ class DashboardServer:
             ssl_keyfile=str(ssl_key), ssl_certfile=str(ssl_cert),
         )
         print(f"[Dashboard] Manual entry:  {self._ip}:{PORT + 1}  (type in browser, accept cert once)")
-        await uvicorn.Server(cfg).serve()
+        await self._serve_uvicorn(cfg)
 
     async def serve(self) -> None:
         if not _DEPS_OK:
@@ -881,4 +895,4 @@ class DashboardServer:
         proto = "https" if use_ssl else "http"
         print(f"[Dashboard] {proto}://{self._ip}:{PORT}")
         print("[Dashboard] Press 'Remote Control' in JARVIS UI to get the QR code.")
-        await uvicorn.Server(cfg).serve()
+        await self._serve_uvicorn(cfg)

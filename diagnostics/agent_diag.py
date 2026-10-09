@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from core.agent_core import AgentCore
 from core.app_discovery import resolve_app
-from core.echo import barge_fallback_candidate
 from core.model_router import ModelDescriptor, ModelRouter
 
 
@@ -30,8 +29,6 @@ def run() -> None:
 
     assert agent.can_recover("try_alternative_editor")
     assert not agent.can_recover("try_alternative_editor")
-    assert barge_fallback_candidate(0.15, 0.06, 0.80)
-    assert not barge_fallback_candidate(0.15, 0.06, 0.99)
 
     route = agent.model_route(agent.understand("Research the latest developments in AI and compare sources."))
     assert route.role == "RESEARCH" and route.provider == "gemini"

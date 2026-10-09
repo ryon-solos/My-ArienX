@@ -78,7 +78,7 @@ def _get_api_key() -> str:
         return json.load(f)["gemini_api_key"]
 
 
-def _gemini_search(query: str) -> str:
+def _gemini_search(query: str, detailed: bool = False) -> str:
     if not _gemini_available():
         raise _QuotaCooldown("Gemini grounding is in quota cooldown")
 
@@ -102,8 +102,8 @@ def _gemini_search(query: str) -> str:
     # default — but it still HAS one, and it still walks the fallback ladder.
     try:
         response = gemini.call(query, tier=gemini.SEARCH,
-                               config={"tools": [{"google_search": {}}]},
-                               timeout_ms=30_000)
+                               config={"tools": [{"google_search": {}}], **({"max_output_tokens": 16384} if detailed else {})},
+                               timeout_ms=120_000 if detailed else 30_000)
         if response is None:
             raise RuntimeError("every Gemini model on the ladder failed")
     except Exception as e:
@@ -305,10 +305,12 @@ def _research(query: str) -> str:
     """
     research_query = (
         f"Comprehensive, detailed explanation of: {query}. "
-        "Include background context, key facts, current state, and important nuances."
+        "Write a full research report with background, key facts, evidence, current state, "
+        "important nuances, examples and source links. Honor any requested depth or word count; "
+        "do not reduce the report to a short overview."
     )
     try:
-        return _gemini_search(research_query)
+        return _gemini_search(research_query, detailed=True)
     except Exception as e:
         _log_gemini_failure("Gemini research", e)
         results = _ddg_search(query, max_results=10)
